@@ -6,6 +6,7 @@ import org.openhorizon.exchangeapi.table.agent.configuration.AgentConfigurationV
 import org.openhorizon.exchangeapi.table.agent.software.AgentSoftwareVersionsTQ
 import org.openhorizon.exchangeapi.table.agreementbot.deploymentpattern.AgbotPatternsTQ
 import org.openhorizon.exchangeapi.table.agreementbot.deploymentpolicy.AgbotBusinessPolsTQ
+import org.openhorizon.exchangeapi.table.apikey.ApiKeysTQ
 import org.openhorizon.exchangeapi.table.deploymentpattern.key.PatternKeysTQ
 import org.openhorizon.exchangeapi.table.deploymentpolicy.BusinessPoliciesTQ
 import org.openhorizon.exchangeapi.table.deploymentpolicy.search.SearchOffsetPolicyTQ
@@ -400,7 +401,9 @@ object SchemaTQ  extends TableQuery(new SchemaTable(_)){
           sqlu"""ALTER TABLE public.managementpolicies ADD CONSTRAINT mgmtpol_user_fk FOREIGN KEY (owner) REFERENCES public.users ("user");""",
           sqlu"""ALTER TABLE public.nodes ADD CONSTRAINT nodes_user_fk FOREIGN KEY (owner) REFERENCES public.users ("user");""",
           sqlu"""ALTER TABLE public.patterns ADD CONSTRAINT pattrns_user_fk FOREIGN KEY (owner) REFERENCES public.users ("user");""",
-          sqlu"""ALTER TABLE public.services ADD CONSTRAINT svcs_user_fk FOREIGN KEY (owner) REFERENCES public.users ("user");"""
+          sqlu"""ALTER TABLE public.services ADD CONSTRAINT svcs_user_fk FOREIGN KEY (owner) REFERENCES public.users ("user");""",
+
+          ApiKeysTQ.schema.create
               )
       case other => // should never get here
         logger.error("getUpgradeSchemaStep was given invalid step "+other); DBIO.seq()

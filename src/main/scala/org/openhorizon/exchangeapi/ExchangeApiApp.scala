@@ -36,6 +36,7 @@ import org.apache.pekko.http.scaladsl.server.RouteResult.Rejected
 import org.apache.pekko.http.scaladsl.server.directives.{Credentials, DebuggingDirectives, LogEntry}
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.json4s._
+import org.mindrot.jbcrypt.BCrypt
 import org.openhorizon.exchangeapi.SwaggerDocService.complete
 import org.openhorizon.exchangeapi.auth.AuthCache.logger
 import org.openhorizon.exchangeapi.auth.{AuthCache, AuthRoles, AuthenticationSupport, DbConnectionException, IAgbot, INode, IUser, IdNotFoundForAuthorizationException, Identity, Identity2, InvalidCredentialsException, Password, Token}
@@ -43,6 +44,7 @@ import org.openhorizon.exchangeapi.route.administration.dropdatabase.Token
 import org.openhorizon.exchangeapi.route.agent.AgentConfigurationManagement
 import org.openhorizon.exchangeapi.route.agreementbot.agreement.{Agreement, Agreements}
 import org.openhorizon.exchangeapi.route.agreementbot.message.{Message, Messages}
+import org.openhorizon.exchangeapi.route.apikey.UserApiKeys
 import org.openhorizon.exchangeapi.route.catalog.OrganizationDeploymentPatterns
 import org.openhorizon.exchangeapi.route.deploymentpattern.{DeploymentPatterns, Search}
 import org.openhorizon.exchangeapi.route.deploymentpolicy.{DeploymentPolicy, DeploymentPolicySearch}
@@ -58,6 +60,7 @@ import org.openhorizon.exchangeapi.route.service.{Policy, Service, Services}
 import org.openhorizon.exchangeapi.route.user.{ChangePassword, Confirm, User, Users}
 import org.openhorizon.exchangeapi.table.agreementbot.AgbotsTQ
 import org.openhorizon.exchangeapi.table.agreementbot.message.AgbotMsgsTQ
+import org.openhorizon.exchangeapi.table.apikey.ApiKeysTQ
 import org.openhorizon.exchangeapi.table.deploymentpattern.PatternsTQ
 import org.openhorizon.exchangeapi.table.deploymentpolicy.BusinessPoliciesTQ
 import org.openhorizon.exchangeapi.table.managementpolicy.ManagementPoliciesTQ
@@ -67,7 +70,7 @@ import org.openhorizon.exchangeapi.table.organization.{OrgRow, OrgsTQ}
 import org.openhorizon.exchangeapi.table.resourcechange.ResourceChangesTQ
 import org.openhorizon.exchangeapi.table.service.ServicesTQ
 import org.openhorizon.exchangeapi.table.user.{UserRow, UsersTQ}
-import org.openhorizon.exchangeapi.utility.{ApiRespType, ApiResponse, ApiTime, ApiUtils, Configuration, DatabaseConnection, ExchMsg, ExchangeRejection, NotFoundRejection}
+import org.openhorizon.exchangeapi.utility.{ApiKeyUtils,ApiRespType, ApiResponse, ApiTime, ApiUtils, Configuration, DatabaseConnection, ExchMsg, ExchangeRejection, NotFoundRejection}
 import scalacache.Entry
 import scalacache.guava.GuavaCache
 import scalacache.modes.scalaFuture._
@@ -183,6 +186,7 @@ object ExchangeApiApp extends App
   with Token
   with User
   with Users
+  with UserApiKeys
   with Version {
   
   // An example of using Spray to marshal/unmarshal json. We chose not to use it because it requires an implicit be defined for every class that needs marshalling
@@ -351,9 +355,41 @@ object ExchangeApiApp extends App
           if (organization.isEmpty &&
               username.isEmpty)
             Future.successful(None)
-          
+
+          if (username == "apikey") {
+            var authenticatedUserIdentity: Option[Identity2] = None
+
+            val verified = p.provideVerify("unused", (_, providedHashedToken) => {
+            val apiKeys = Await.result(db.run(ApiKeysTQ.getByOrg(organization).result), 10.seconds)
+
+            val matchedOpt = apiKeys.find(apiKey =>
+                BCrypt.checkpw(providedHashedToken, apiKey.hashedKey)
+              )
+
+            matchedOpt match {
+              case Some(matchedKey) =>
+                val ownerStrOpt = Await.result(db.run(ApiKeysTQ.getOrgAndUsernameByKeyId(matchedKey.id)), 5.seconds)
+
+                ownerStrOpt match {
+                  case Some(ownerStr) =>
+                    val Array(orgFromKey, userFromKey) = ownerStr.split("/", 2)
+                    authenticatedUserIdentity = getUserIdentity(orgFromKey, userFromKey)
+                    true
+
+                  case None =>
+                    false
+                }
+
+              case None =>
+                false
+            }
+            })
+
+            if (verified) authenticatedUserIdentity else None
+          } 
+          else {
           val (storedSecret: String, userType: Int) = getPassword(organization, resource, username).getOrElse(("", 0))
-          
+ 
           if (p.provideVerify(secret = storedSecret,
                               verifier = (storedSecret, requestPassword) =>  // (Hashed credential in database, Plain-text password from Authorization: Basic header)
                               {/*logger.debug("Line 333:    credential: " + requestPassword + "    secret: " + storedSecret);*/ Password.check(requestPassword, storedSecret)})) {
@@ -367,57 +403,62 @@ object ExchangeApiApp extends App
                                role = AuthRoles.Agbot,
                                username = username))
               case 2 =>
-                val useridentity: (Boolean, Boolean, UUID) =
-                  Await.result(db.run(
-                    Compiled(UsersTQ.filter(users => users.organization === organization &&
-                                                     users.username === username)
-                                    .map(users => (users.isHubAdmin,
-                                                   users.isOrgAdmin,
-                                                   users.user))
-                                    .take(1))
-                                    .result
-                                    .head
-                                    .transactionally),
-                               10.seconds)
-                val authenticatedUserIdentity =
-                  Some(Identity2(identifier = Option(useridentity._3),
-                                 organization = organization,
-                                 role =
-                                   useridentity match {
-                                     case (true, true, _) =>
-                                       if ((s"$organization/$username" != "root/root"))
-                                         logger.warning(s"User resource $organization/$username(resource: ${useridentity._3}) has Root level access permissions") // Root level permissions are used in test environments, any other user should not have root level access in a production environment.
-                                       AuthRoles.SuperUser
-                                     case (true, false, _) =>
-                                       AuthRoles.HubAdmin
-                                     case (false, true, _) =>
-                                       AuthRoles.AdminUser
-                                     case _ =>
-                                       AuthRoles.User
-                                   },
-                               username = username))
-                
-                // Guard, should never hit this condition. Reject the authentication attempt if true, as we cannot determine this resource's identity.
-                if (authenticatedUserIdentity.get.isUser &&
-                    authenticatedUserIdentity.get.identifier.isEmpty) {
-                  logger.error(s"The ${authenticatedUserIdentity.get.role} resource ${authenticatedUserIdentity.get.resource} is missing a UUID")
-                  
-                  None
-                }
-                else
-                  authenticatedUserIdentity
+                   getUserIdentity(organization, username)
                 
               case _ => None
             }
           }
           else
             None
+        } 
         }
       case _ =>
         Future.successful(None)
     }
   }
-  
+
+  private def getUserIdentity(organization: String, username: String): Option[Identity2] = {
+    val useridentity: (Boolean, Boolean, UUID) =
+      Await.result(db.run(
+        Compiled(UsersTQ.filter(users => users.organization === organization &&
+                                         users.username === username)
+                        .map(users => (users.isHubAdmin,
+                                       users.isOrgAdmin,
+                                       users.user))
+                        .take(1))
+                        .result
+                        .head
+                        .transactionally),
+                   10.seconds)
+    val authenticatedUserIdentity =
+      Some(Identity2(identifier = Option(useridentity._3),
+                     organization = organization,
+                     role =
+                       useridentity match {
+                         case (true, true, _) =>
+                           if ((s"$organization/$username" != "root/root"))
+                                         logger.warning(s"User resource $organization/$username(resource: ${useridentity._3}) has Root level access permissions") // Root level permissions are used in test environments, any other user should not have root level access in a production environment.
+                           AuthRoles.SuperUser
+                         case (true, false, _) =>
+                           AuthRoles.HubAdmin
+                         case (false, true, _) =>
+                           AuthRoles.AdminUser
+                         case _ =>
+                           AuthRoles.User
+                       },
+                     username = username))
+
+                // Guard, should never hit this condition. Reject the authentication attempt if true, as we cannot determine this resource's identity.
+    if (authenticatedUserIdentity.get.isUser &&
+        authenticatedUserIdentity.get.identifier.isEmpty) {
+      logger.error(s"The ${authenticatedUserIdentity.get.role} resource ${authenticatedUserIdentity.get.resource} is missing a UUID")
+
+      None
+    } 
+    else    
+      authenticatedUserIdentity
+  }
+
   //someday: use directive https://doc.pekko.io/docs/pekko-http/current/routing-dsl/directives/misc-directives/selectPreferredLanguage.html to support a different language for each client
   lazy val routes: Route =
     DebuggingDirectives.logRequestResult(requestResponseLogging _) {
@@ -514,7 +555,8 @@ object ExchangeApiApp extends App
                         statuses(validIdentity) ~
                         token(validIdentity) ~
                         user(validIdentity) ~
-                        users(validIdentity)
+                        users(validIdentity) ~
+                        userApiKeys(validIdentity)
                     })
                   }
                 }
