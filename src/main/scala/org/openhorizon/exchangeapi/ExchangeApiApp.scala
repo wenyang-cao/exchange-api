@@ -41,6 +41,7 @@ import org.openhorizon.exchangeapi.route.administration.dropdatabase.Token
 import org.openhorizon.exchangeapi.route.agent.AgentConfigurationManagement
 import org.openhorizon.exchangeapi.route.agreementbot.agreement.{Agreement, Agreements, Confirm}
 import org.openhorizon.exchangeapi.route.agreementbot.message.{Message, Messages}
+import org.openhorizon.exchangeapi.route.apikey.UserApiKeys
 import org.openhorizon.exchangeapi.route.deploymentpattern.{DeploymentPatterns, Search}
 import org.openhorizon.exchangeapi.route.deploymentpolicy.{DeploymentPolicy, DeploymentPolicySearch}
 import org.openhorizon.exchangeapi.route.managementpolicy.{ManagementPolicies, ManagementPolicy}
@@ -55,6 +56,7 @@ import org.openhorizon.exchangeapi.route.service.{Policy, Service, Services}
 import org.openhorizon.exchangeapi.route.user.{ChangePassword, Confirm, User, Users}
 import org.openhorizon.exchangeapi.table.agreementbot.AgbotsTQ
 import org.openhorizon.exchangeapi.table.agreementbot.message.AgbotMsgsTQ
+import org.openhorizon.exchangeapi.table.apikey.ApiKeysTQ
 import org.openhorizon.exchangeapi.table.deploymentpattern.PatternsTQ
 import org.openhorizon.exchangeapi.table.deploymentpolicy.BusinessPoliciesTQ
 import org.openhorizon.exchangeapi.table.managementpolicy.ManagementPoliciesTQ
@@ -64,7 +66,7 @@ import org.openhorizon.exchangeapi.table.organization.{OrgRow, OrgsTQ}
 import org.openhorizon.exchangeapi.table.resourcechange.ResourceChangesTQ
 import org.openhorizon.exchangeapi.table.service.ServicesTQ
 import org.openhorizon.exchangeapi.table.user.{UserRow, UsersTQ}
-import org.openhorizon.exchangeapi.utility.{ApiRespType, ApiResponse, ApiTime, ApiUtils, Configuration, DatabaseConnection, ExchMsg, ExchangeRejection, NotFoundRejection}
+import org.openhorizon.exchangeapi.utility.{ApiKeyUtils,ApiRespType, ApiResponse, ApiTime, ApiUtils, Configuration, DatabaseConnection, ExchMsg, ExchangeRejection, NotFoundRejection}
 import scalacache.Entry
 import scalacache._
 import scalacache.caffeine._
@@ -183,6 +185,7 @@ object ExchangeApiApp extends App
   with Token
   with User
   with Users
+  with UserApiKeys
   with Version {
   
   // An example of using Spray to marshal/unmarshal json. We chose not to use it because it requires an implicit be defined for every class that needs marshalling
@@ -554,7 +557,8 @@ object ExchangeApiApp extends App
                         statuses(validIdentity) ~
                         token(validIdentity) ~
                         user(validIdentity) ~
-                        users(validIdentity)
+                        users(validIdentity) ~
+                        userApiKeys(validIdentity)
                     })
                   }
                 }
