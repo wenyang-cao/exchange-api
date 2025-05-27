@@ -16,6 +16,7 @@ import org.apache.pekko.http.scaladsl.unmarshalling.Unmarshaller
 import org.openhorizon.exchangeapi.ExchangeApiApp.myUserPassAuthenticator
 import org.openhorizon.exchangeapi.auth.{Access, AuthCache, AuthRoles, AuthenticationSupport, BadInputException, IUser, Identity, Identity2, OrgAndId, Password, Role, TUser}
 import org.openhorizon.exchangeapi.table.user.{UserRow, UsersTQ, User => UserTable}
+import org.openhorizon.exchangeapi.table.apikey.{ApiKeyRow, ApiKeysTQ,ApiKeyMetadata}
 import org.openhorizon.exchangeapi.utility.{ApiRespType, ApiResponse, ApiTime, ExchMsg, ExchangePosgtresErrorHandling, HttpCode, StrConstants}
 import slick.jdbc.PostgresProfile.api._
 import slick.lifted.{CompiledStreamingExecutable, MappedProjection}
@@ -25,6 +26,7 @@ import java.sql.Timestamp
 import java.util.UUID
 import scala.concurrent.ExecutionContext
 import scala.util.{Failure, Success}
+import scala.concurrent.Future
 
 
 @Path("/v1/orgs/{organization}/users/{username}")
@@ -56,7 +58,14 @@ trait User extends JacksonSupport with AuthenticationSupport {
       "admin": false,
       "email": "string",
       "lastUpdated": "string",
-      "updatedBy": "string"
+      "updatedBy": "string",
+            "apikeys": [
+        {
+          "id": "uuid",
+          "description": "string",
+          "lastUpdated": "string"
+        }
+      ]
     }
   },
   "lastIndex": 0
@@ -126,26 +135,54 @@ trait User extends JacksonSupport with AuthenticationSupport {
         } yield users.map(user => (user._1.mapTo[UserRow], user._2))
         
       complete({
-        db.run(getUser.result.transactionally.asTry).map {
-          case Success(result) =>
-            logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
-            if (result.isEmpty)
-              (StatusCodes.NotFound, GetUsersResponse(Map.empty[String, UserTable], 0))
-            else if (result.size == 1) {
-              val userMap: Map[String, UserTable] =
-                result.map(result => s"${result._1.organization}/${result._1.username}" -> new UserTable(result)).toMap // Ugly mapping, TODO: redesign response body
-              (StatusCodes.OK, GetUsersResponse(userMap, 0))
+            db.run(getUser.result.transactionally.asTry).flatMap {
+                  case Success(result) =>
+                        logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
+
+                        if (result.isEmpty) {
+                              Future.successful((StatusCodes.NotFound, GetUsersResponse(Map.empty[String, UserTable], 0)))
+                        } else if (result.size == 1) {
+                              val userResult = result.head
+                              val userRow = userResult._1
+
+                              val apiKeysQuery = ApiKeysTQ.getByUser(userRow.user)
+                              db.run(apiKeysQuery.result.asTry).map {
+                                    case Success(apiKeys) =>
+                                          val apiKeyMetadataList = apiKeys.map(apiKeyRow =>
+                                                new ApiKeyMetadata(apiKeyRow, null)
+                                          )
+
+                                          val user = new UserTable(userResult, Some(apiKeyMetadataList))
+                                          val userMap: Map[String, UserTable] =
+                                                Map(s"${userRow.organization}/${userRow.username}" -> user)
+
+                                          (StatusCodes.OK, GetUsersResponse(userMap, 0))
+
+                                    case Failure(t) =>
+                                          // logger.error(s"Failed to fetch API keys for user ${userRow.user}: ${t.getMessage}")
+                                          val user = new UserTable(userResult, Some(Seq.empty))
+                                          val userMap: Map[String, UserTable] =
+                                                Map(s"${userRow.organization}/${userRow.username}" -> user)
+
+                                          (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                              }
+
+                        } else {
+                              Future.successful((HttpCode.INTERNAL_ERROR,
+                                    ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("user.not.deleted", resource, ""))))
+                        }
+
+                  case Failure(t: org.postgresql.util.PSQLException) =>
+                        Future.successful(ExchangePosgtresErrorHandling.ioProblemError(
+                              t, ExchMsg.translate("user.not.added", t.toString)))
+
+                  case Failure(t) =>
+                        Future.successful((HttpCode.BAD_INPUT,
+                              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString))))
             }
-            else
-              (HttpCode.INTERNAL_ERROR, ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("user.not.deleted", resource, "")))
-          case Failure(t: org.postgresql.util.PSQLException) =>
-            ExchangePosgtresErrorHandling.ioProblemError(t, ExchMsg.translate("user.not.added", t.toString))
-          case Failure(t) =>
-            (HttpCode.BAD_INPUT, ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
-        }
       })
     }
-  
+
   // =========== POST /orgs/{organization}/users/{username} ===============================
   @POST
   @Operation(
