@@ -65,7 +65,7 @@ trait Users extends JacksonSupport with AuthenticationSupport {
       "updatedBy": "org1/user1",
       "apikeys": [
         {
-          "id": "uuid",
+          "id": "string",
           "description": "string",
           "lastUpdated": "string"
         }
@@ -149,59 +149,54 @@ trait Users extends JacksonSupport with AuthenticationSupport {
         } yield users.map(user => (user._1.mapTo[UserRow], user._2))
         
       complete({
-        db.run(getUsers.result.transactionally.asTry).flatMap {
-          case Success(result) =>
-            logger.debug(s"GET /orgs/$organization/users result size: " + result.size)
+            db.run(getUsers.result.transactionally).flatMap { result =>
+                  // logger.debug(s"GET /orgs/$organization/users result size: " + result.size)
 
-            if (result.isEmpty) {
-              Future.successful((StatusCodes.NotFound, GetUsersResponse(Map.empty[String, User], 0)))
-            } else {
-              val userUuids = result.map(_._1.user)
-              val allApiKeysQuery = ApiKeysTQ.filter(_.user.inSet(userUuids))
+                  if (result.isEmpty) {
+                        Future.successful((StatusCodes.NotFound, GetUsersResponse(Map.empty[String, User], 0)))
+                  } else {
+                        val userUuids = result.map(_._1.user)
+                        val allApiKeysQuery = ApiKeysTQ.filter(_.user.inSet(userUuids))
 
-              db.run(allApiKeysQuery.result.asTry).map {
-                case Success(allApiKeys) =>
-                  val apiKeysByUser = allApiKeys.groupBy(_.user)
+                        db.run(allApiKeysQuery.result).map { allApiKeys =>
+                              val apiKeysByUser = allApiKeys.groupBy(_.user)
 
-                  val userMap: Map[String, User] = result.map { userResult =>
-                    val userRow = userResult._1
-                    val userUuid = userRow.user
-                    val userApiKeys = apiKeysByUser.getOrElse(userUuid, Seq.empty)
-                    val apiKeyMetadataList = userApiKeys.map(apiKeyRow =>
-                      new ApiKeyMetadata(apiKeyRow, null)
-                    )
+                              val userMap: Map[String, User] = result.map { userResult =>
+                                    val userRow = userResult._1
+                                    val userUuid = userRow.user
+                                    val userApiKeys = apiKeysByUser.getOrElse(userUuid, Seq.empty)
+                                    val apiKeyMetadataList = userApiKeys.map(apiKeyRow =>
+                                          new ApiKeyMetadata(apiKeyRow, null)
+                                    )
 
-                    val user = new User(userResult, Some(apiKeyMetadataList))
-                    s"${userRow.organization}/${userRow.username}" -> user
-                  }.toMap
+                                    val user = new User(userResult, Some(apiKeyMetadataList))
+                                    s"${userRow.organization}/${userRow.username}" -> user
+                              }.toMap
 
-                  (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                              (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                        }.recover { case _ =>
+                              val userMap: Map[String, User] = result.map { userResult =>
+                                    val userRow = userResult._1
+                                    val user = new User(userResult, Some(Seq.empty))
+                                    s"${userRow.organization}/${userRow.username}" -> user
+                              }.toMap  // Ugly mapping, TODO: redesign response body
 
-                case Failure(t) =>
-                  logger.error(s"Failed to fetch API keys for users: ${t.getMessage}")
+                              (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                        }
+                  }
+            }.recover {
+                  case t: ClassNotFoundException =>
+                        (HttpCode.NOT_FOUND,
+                              ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("user.not.found", organization)))
 
-                  val userMap: Map[String, User] = result.map { userResult =>
-                    val userRow = userResult._1
-                    val user = new User(userResult, Some(Seq.empty))
-                    s"${userRow.organization}/${userRow.username}" -> user
-                  }.toMap
+                  case t: org.postgresql.util.PSQLException =>
+                        ExchangePosgtresErrorHandling.ioProblemError(
+                              t, ExchMsg.translate("user.not.added", t.toString))
 
-                  (StatusCodes.OK, GetUsersResponse(userMap, 0))
-              }
+                  case t =>
+                        (HttpCode.BAD_INPUT,
+                              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
             }
-
-          case Failure(t: ClassNotFoundException) =>
-            Future.successful((HttpCode.NOT_FOUND,
-              ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("user.not.found", organization))))
-
-          case Failure(t: org.postgresql.util.PSQLException) =>
-            Future.successful(ExchangePosgtresErrorHandling.ioProblemError(
-              t, ExchMsg.translate("user.not.added", t.toString)))
-
-          case Failure(t) =>
-            Future.successful((HttpCode.BAD_INPUT,
-              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString))))
-        }
       })
       
       /*complete({

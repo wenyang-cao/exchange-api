@@ -266,7 +266,7 @@ test("POST /orgs/" + TESTORGS(0).orgId + "/users/nonexistentuser" + ROUTE + " --
   info("Code: " + response.code)
   info("Body: " + response.body)
 
-  assert(response.code === HttpCode.BAD_INPUT.intValue)
+  assert(response.code === HttpCode.NOT_FOUND.intValue)
 }
 
 }

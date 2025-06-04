@@ -63,7 +63,7 @@ trait User extends JacksonSupport with AuthenticationSupport {
       "email": "string",
       "lastUpdated": "string",
       "updatedBy": "string",
-            "apikeys": [
+      "apikeys": [
         {
           "id": "string",
           "description": "string",
@@ -140,45 +140,42 @@ trait User extends JacksonSupport with AuthenticationSupport {
         } yield users.map(user => (user._1.mapTo[UserRow], user._2))
         
       complete({
-            db.run(getUser.result.transactionally.asTry).flatMap {
-                  case Success(result) =>
-                        logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
+            db.run(getUser.result.transactionally).flatMap { result =>
+                  // logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
 
-                        if (result.nonEmpty) {
-                              val userResult = result.head
-                              val userRow = userResult._1
+                  if (result.nonEmpty) {
+                        val userResult = result.head
+                        val userRow = userResult._1
 
-                              val apiKeysQuery = ApiKeysTQ.getByUser(userRow.user)
-                              db.run(apiKeysQuery.result.asTry).map {
-                                    case Success(apiKeys) =>
-                                          val apiKeyMetadataList = apiKeys.map(apiKeyRow =>
-                                                new ApiKeyMetadata(apiKeyRow, null)
-                                          )
+                        val apiKeysQuery = ApiKeysTQ.getByUser(userRow.user)
+                        db.run(apiKeysQuery.result).map { apiKeys =>
+                              val apiKeyMetadataList = apiKeys.map(apiKeyRow =>
+                                    new ApiKeyMetadata(apiKeyRow, null)
+                              )
 
-                                          val user = new UserTable(userResult, Some(apiKeyMetadataList))
-                                          val userMap: Map[String, UserTable] =
-                                                Map(s"${userRow.organization}/${userRow.username}" -> user)
+                              val user = new UserTable(userResult, Some(apiKeyMetadataList))
+                              val userMap: Map[String, UserTable] =
+                                    Map(s"${userRow.organization}/${userRow.username}" -> user) // Ugly mapping, TODO: redesign response body
 
-                                          (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                              (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                        }.recover { case _ =>
+                              val user = new UserTable(userResult, Some(Seq.empty))
+                              val userMap: Map[String, UserTable] =
+                                    Map(s"${userRow.organization}/${userRow.username}" -> user)
 
-                                    case Failure(t) =>
-                                          val user = new UserTable(userResult, Some(Seq.empty))
-                                          val userMap: Map[String, UserTable] =
-                                                Map(s"${userRow.organization}/${userRow.username}" -> user)
-
-                                          (StatusCodes.OK, GetUsersResponse(userMap, 0))
-                              }
-                        } else {
-                              Future.successful((StatusCodes.NotFound, GetUsersResponse()))
+                              (StatusCodes.OK, GetUsersResponse(userMap, 0))
                         }
+                  } else {
+                        Future.successful((StatusCodes.NotFound, GetUsersResponse()))
+                  }
+            }.recover {
+                  case t: org.postgresql.util.PSQLException =>
+                        ExchangePosgtresErrorHandling.ioProblemError(
+                              t, ExchMsg.translate("user.not.added", t.toString))
 
-                  case Failure(t: org.postgresql.util.PSQLException) =>
-                        Future.successful(ExchangePosgtresErrorHandling.ioProblemError(
-                              t, ExchMsg.translate("user.not.added", t.toString)))
-
-                  case Failure(t) =>
-                        Future.successful((HttpCode.BAD_INPUT,
-                              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString))))
+                  case t =>
+                        (HttpCode.BAD_INPUT,
+                              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
             }
       })
     }

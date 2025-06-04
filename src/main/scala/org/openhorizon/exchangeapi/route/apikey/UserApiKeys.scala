@@ -19,7 +19,6 @@ import java.util.UUID
 import slick.jdbc.PostgresProfile.api._
 import scala.concurrent.ExecutionContext
 import scala.util._
-import _root_.org.openhorizon.exchangeapi.utility.ApiKeyUtils
 import org.openhorizon.exchangeapi.utility.HttpCode
 import io.swagger.v3.oas.annotations.parameters.RequestBody
 import scala.concurrent.Future
@@ -37,8 +36,8 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
   implicit def executionContext: ExecutionContext
  
   // === POST /v1/orgs/{organization}/users/{username}/apikeys ===
-@POST
-@Operation(
+  @POST
+  @Operation(
   summary = "Create a new API key for a user",
   description = "Creates a new API key for the specified user. Can be called by the user or org admin.",
   parameters = Array(
@@ -51,9 +50,10 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
       mediaType = "application/json",
       schema = new Schema(implementation = classOf[PostApiKeyRequest]),
       examples = Array(
-        new ExampleObject(value = """{
-          "description": "Test API key for user"
-        }""")
+        new ExampleObject(
+          value = """{
+  "description": "Test API key for user"
+}""")
       )
     ))
   ),
@@ -63,13 +63,14 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
         mediaType = "application/json", 
         schema = new Schema(implementation = classOf[PostApiKeyResponse]),
         examples = Array(
-          new ExampleObject(value = """{
-            "id": "string",
-            "description": "string",
-            "owner": "string",
-            "value": "string",
-            "lastUpdated": "string"
-          }""")
+          new ExampleObject(
+            value = """{
+  "id": "string",
+  "description": "string",
+  "owner": "string",
+  "value": "string",
+  "lastUpdated": "string"
+}""")
         )
       ))),
     new responses.ApiResponse(responseCode = "400", description = "bad input"),
@@ -77,53 +78,54 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
     new responses.ApiResponse(responseCode = "403", description = "access denied")
   )
 )
-  def postUserApiKey(@Parameter(hidden = true)identity: Identity2, 
-                     @Parameter(hidden = true)organization: String, 
+  def postUserApiKey(@Parameter(hidden = true)identity: Identity2,
+                     @Parameter(hidden = true)organization: String,
                      @Parameter(hidden = true)username: String): Route = {
     entity(as[PostApiKeyRequest]) { body =>
-      val ownerStr = s"$organization/$username" //In DB it is UUID. Need to convert to string when displaying to user
+      val ownerStr = s"$organization/$username"
       val sha256Token = ApiKeyUtils.generateApiKeyHashedValue()
-      val bcryptForDb = ApiKeyUtils.bcryptHash(sha256Token)
+      val argon2ForDb = Password.hash(sha256Token)
       val keyId = ApiKeyUtils.generateApiKeyId()
-      val timestamp: java.sql.Timestamp = ApiTime.nowUTCTimestamp //standardizing on Timestamp DB types
+      val timestamp: java.sql.Timestamp = ApiTime.nowUTCTimestamp
 
       complete {
-      db.run((for {
-        userOpt <- UsersTQ.filter(u => u.organization === organization && u.username === username).result.headOption
-        result <- userOpt match {
-          case Some(userRow) =>
-            val row = ApiKeyRow(
-              orgid = organization,
-              id = keyId,
-              user = userRow.user, // FK: UUID
-              description = body.description,
-              hashedKey = bcryptForDb,
-              createdAt = timestamp,
-              createdBy = identity.identifier.get,
-              modifiedAt = timestamp,
-              modifiedBy = identity.identifier.get
-            )
-            for {
-              _ <- ApiKeysTQ.insert(row)
-              _ <- ResourceChangesTQ += ResourceChange(0L, organization, keyId.toString, ResChangeCategory.APIKEY, public = false, ResChangeResource.APIKEY, ResChangeOperation.CREATED).toResourceChangeRow
-            } yield Right(userRow)
-          case None =>
-            DBIO.successful(Left("User not found."))
-        }
-      } yield result).transactionally.asTry).map {
-          case Success(Right(userRow)) =>
-      val response = PostApiKeyResponse(
-          id = keyId.toString,
-          description = body.description,
-          owner = ownerStr, // Display org/username
-          value = sha256Token,
-          lastUpdated = timestamp.toInstant.atZone(ZoneId.of("UTC")).withZoneSameInstant(ZoneId.of("UTC")).toString)
-           (HttpCode.POST_OK, response)
-
-          case Success(Left(msg)) =>
-            (HttpCode.BAD_INPUT, ApiResponse(ApiRespType.BAD_INPUT, msg))
-          case Failure(_) =>
-            (HttpCode.BAD_INPUT, ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("apikey.creation.failed")))
+        db.run((for {
+          userUuid <- UsersTQ.filter(u => u.organization === organization && u.username === username)
+                             .map(_.user).result.head
+          _ <- ApiKeysTQ += ApiKeyRow(
+                 orgid = organization,
+                 id = keyId,
+                 user = userUuid,
+                 description = body.description,
+                 hashedKey = argon2ForDb,
+                 createdAt = timestamp,
+                 createdBy = identity.identifier.get,
+                 modifiedAt = timestamp,
+                 modifiedBy = identity.identifier.get
+               )
+          _ <- ResourceChangesTQ += ResourceChange(
+                 0L,
+                 organization,
+                 keyId.toString,
+                 ResChangeCategory.APIKEY,
+                 public = false,
+                 ResChangeResource.APIKEY,
+                 ResChangeOperation.CREATED
+               ).toResourceChangeRow
+        } yield userUuid).transactionally).map { _ =>
+          val response = PostApiKeyResponse(
+            id = keyId.toString,
+            description = body.description,
+            owner = ownerStr,
+            value = sha256Token,
+            lastUpdated = timestamp.toInstant.atZone(ZoneId.of("UTC")).withZoneSameInstant(ZoneId.of("UTC")).toString)
+          (HttpCode.POST_OK, response)
+        }.recover {
+          case _: NoSuchElementException =>
+            (HttpCode.NOT_FOUND, ApiResponse(ApiRespType.NOT_FOUND, "User not found"))
+          case ex =>
+            logger.error(s"Failed to create API key for $organization/$username", ex)
+            (HttpCode.INTERNAL_ERROR, ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("apikey.creation.failed")))
         }
       }
     }
@@ -189,11 +191,11 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
         examples = Array(
           new ExampleObject(
             value = """{
-              "id": "string",
-              "description": "string",
-              "owner": "string",
-              "lastUpdated": "string"
-            }"""
+  "id": "string",
+  "description": "string",
+  "owner": "string",
+  "lastUpdated": "string"
+}"""
           )
         )
       ))
@@ -213,27 +215,20 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
       key  <- ApiKeysTQ.filter(k => k.id === keyid && k.user === user.user && k.orgid === organization)
     } yield (user, key)
 
-    val fullQuery = for {
-      resultOpt   <- userAndKeyQuery.result.headOption
-      ownerStrOpt <- resultOpt match {
-                        case Some(_) => ApiKeysTQ.getOrgAndUsernameByKeyId(keyid)
-                        case None    => DBIO.successful(None)
-                      }
-    } yield (resultOpt, ownerStrOpt)
-
-    db.run(fullQuery.transactionally).map {
-      case (Some((_, keyRow)), Some(ownerStr)) =>
+    db.run(userAndKeyQuery.result.headOption).map {
+      case Some((_, keyRow)) =>
+        val ownerStr = s"$organization/$username"
         val metadata = new ApiKeyMetadata(keyRow, ownerStr)
         (StatusCodes.OK, metadata)
 
-      case _ =>
+      case None =>
         (StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("apikey.not.found")))
     }
   }
+
 def userApiKeys(identity: Identity2): Route = {
   pathPrefix("orgs" / Segment / "users" / Segment / "apikeys") { (organization, username) =>
     val resource = OrgAndId(organization, username).toString
-    val resourceType = "user"
 
     val getResourceIdentity: Future[Option[UUID]] = db.run {
       UsersTQ

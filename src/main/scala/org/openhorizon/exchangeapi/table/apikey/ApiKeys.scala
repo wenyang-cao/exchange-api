@@ -1,7 +1,7 @@
 package org.openhorizon.exchangeapi.table.apikey
+import java.util.UUID
 import org.openhorizon.exchangeapi.table.user.UsersTQ
 import slick.jdbc.PostgresProfile.api._
-import java.util.UUID
 
 class ApiKeys(tag: Tag) extends Table[ApiKeyRow](tag, "apikeys") {
   def orgid = column[String]("orgid")
