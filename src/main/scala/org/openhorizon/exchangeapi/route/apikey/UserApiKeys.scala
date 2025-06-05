@@ -11,20 +11,22 @@ import org.apache.pekko.http.scaladsl.model.{StatusCode, StatusCodes}
 import org.apache.pekko.http.scaladsl.server.Directives._
 import org.apache.pekko.http.scaladsl.server.Route
 import org.openhorizon.exchangeapi.auth._
+import org.openhorizon.exchangeapi.ExchangeApiApp.{cacheResourceIdentity, cacheResourceOwnership, getOwnerOfResource, myUserPassAuthenticator, routes}
 import org.openhorizon.exchangeapi.table.apikey.{ApiKeyMetadata, ApiKeysTQ, ApiKeyRow}
 import org.openhorizon.exchangeapi.table.user.{User, UserRow, UsersTQ}
 import org.openhorizon.exchangeapi.table.resourcechange.{ResChangeCategory, ResChangeOperation, ResChangeResource, ResourceChange, ResourceChangeRow, ResourceChangesTQ}
 import org.openhorizon.exchangeapi.utility._
-import java.util.UUID
-import slick.jdbc.PostgresProfile.api._
-import scala.concurrent.ExecutionContext
-import scala.util._
-import org.openhorizon.exchangeapi.utility.HttpCode
-import io.swagger.v3.oas.annotations.parameters.RequestBody
-import scala.concurrent.Future
-import scala.util.{Success, Failure}
 import java.sql.Timestamp
 import java.time.ZoneId
+import java.util.UUID
+
+import scala.concurrent.{ExecutionContext, Future}
+import scala.concurrent.duration._
+import scala.util.{Failure, Success}
+
+import io.swagger.v3.oas.annotations.parameters.RequestBody
+import scalacache.modes.scalaFuture._
+import slick.jdbc.PostgresProfile.api._
 
 @Path("/v1/orgs/{organization}/users/{username}/apikeys")
 @io.swagger.v3.oas.annotations.tags.Tag(name = "apikey")
@@ -78,9 +80,10 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
     new responses.ApiResponse(responseCode = "403", description = "access denied")
   )
 )
-  def postUserApiKey(@Parameter(hidden = true)identity: Identity2,
-                     @Parameter(hidden = true)organization: String,
-                     @Parameter(hidden = true)username: String): Route = {
+  def postUserApiKey(@Parameter(hidden = true) identity: Identity2,
+                     @Parameter(hidden = true) organization: String,
+                     @Parameter(hidden = true) username: String,
+                     resourceUuidOpt: Option[UUID]): Route = {
     entity(as[PostApiKeyRequest]) { body =>
       val ownerStr = s"$organization/$username"
       val sha256Token = ApiKeyUtils.generateApiKeyHashedValue()
@@ -88,45 +91,49 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
       val keyId = ApiKeyUtils.generateApiKeyId()
       val timestamp: java.sql.Timestamp = ApiTime.nowUTCTimestamp
 
-      complete {
-        db.run((for {
-          userUuid <- UsersTQ.filter(u => u.organization === organization && u.username === username)
-                             .map(_.user).result.head
-          _ <- ApiKeysTQ += ApiKeyRow(
-                 orgid = organization,
-                 id = keyId,
-                 user = userUuid,
-                 description = body.description,
-                 hashedKey = argon2ForDb,
-                 createdAt = timestamp,
-                 createdBy = identity.identifier.get,
-                 modifiedAt = timestamp,
-                 modifiedBy = identity.identifier.get
-               )
-          _ <- ResourceChangesTQ += ResourceChange(
-                 0L,
-                 organization,
-                 keyId.toString,
-                 ResChangeCategory.APIKEY,
-                 public = false,
-                 ResChangeResource.APIKEY,
-                 ResChangeOperation.CREATED
-               ).toResourceChangeRow
-        } yield userUuid).transactionally).map { _ =>
-          val response = PostApiKeyResponse(
-            id = keyId.toString,
-            description = body.description,
-            owner = ownerStr,
-            value = sha256Token,
-            lastUpdated = timestamp.toInstant.atZone(ZoneId.of("UTC")).withZoneSameInstant(ZoneId.of("UTC")).toString)
-          (HttpCode.POST_OK, response)
-        }.recover {
-          case _: NoSuchElementException =>
-            (HttpCode.NOT_FOUND, ApiResponse(ApiRespType.NOT_FOUND, "User not found"))
-          case ex =>
-            logger.error(s"Failed to create API key for $organization/$username", ex)
-            (HttpCode.INTERNAL_ERROR, ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("apikey.creation.failed")))
-        }
+      resourceUuidOpt match {
+        case Some(userUuid) =>
+          // logger.debug(s"[postUserApiKey] Using UUID: $userUuid for user $ownerStr")
+          complete {
+            db.run((for {
+              _ <- ApiKeysTQ += ApiKeyRow(
+                     orgid = organization,
+                     id = keyId,
+                     user = userUuid,
+                     description = body.description,
+                     hashedKey = argon2ForDb,
+                     createdAt = timestamp,
+                     createdBy = identity.identifier.get,
+                     modifiedAt = timestamp,
+                     modifiedBy = identity.identifier.get
+                   )
+              _ <- ResourceChangesTQ += ResourceChange(
+                     0L,
+                     organization,
+                     keyId.toString,
+                     ResChangeCategory.APIKEY,
+                     public = false,
+                     ResChangeResource.APIKEY,
+                     ResChangeOperation.CREATED
+                   ).toResourceChangeRow
+            } yield ()).transactionally).map { _ =>
+              val response = PostApiKeyResponse(
+                id = keyId.toString,
+                description = body.description,
+                owner = ownerStr,
+                value = sha256Token,
+                lastUpdated = timestamp.toInstant.atZone(ZoneId.of("UTC")).withZoneSameInstant(ZoneId.of("UTC")).toString
+              )
+              (HttpCode.POST_OK, response)
+            }.recover {
+              case ex =>
+                logger.error(s"Failed to create API key for $organization/$username", ex)
+                (HttpCode.INTERNAL_ERROR, ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("apikey.creation.failed")))
+            }
+          }
+
+        case None =>
+          complete(HttpCode.NOT_FOUND, ApiResponse(ApiRespType.NOT_FOUND, "User not found"))
       }
     }
   }
@@ -150,24 +157,43 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
     new responses.ApiResponse(responseCode = "500", description = "internal server error")
   )
 )
-  def deleteUserApiKey(@Parameter(hidden = true)identity: Identity2,
+  def deleteUserApiKey(@Parameter(hidden = true) identity: Identity2,
                        @Parameter(hidden = true) organization: String,
                        @Parameter(hidden = true) username: String,
-                       @Parameter(hidden = true) keyid: UUID): Route = complete {
+                       @Parameter(hidden = true) keyid: UUID,
+                       resourceUuidOpt: Option[UUID]): Route = complete {
 
-   db.run((for {
-     deleted <- ApiKeysTQ.getById(keyid).delete
-      _ <- if (deleted > 0) ResourceChangesTQ += ResourceChange(0L, organization, keyid.toString, ResChangeCategory.APIKEY, public = false,ResChangeResource.APIKEY, ResChangeOperation.DELETED
-       ).toResourceChangeRow else DBIO.successful(0)
-    } yield deleted).transactionally.asTry).map {
-    case Success(0) =>
-        (StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("apikey.not.found")))
-    case Success(_) =>
-         (StatusCodes.NoContent, ApiResponse(ApiRespType.OK, ExchMsg.translate("apikey.deleted")))
-    case Failure(ex) =>
-      logger.error(s"Error deleting API key $keyid", ex)
-       (StatusCodes.InternalServerError, ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("apikey.deletion.failed")))
-  }
+    resourceUuidOpt match {
+      case Some(userUuid) =>
+        db.run((for {
+          deleted <- ApiKeysTQ.filter(k => k.id === keyid && k.user === userUuid && k.orgid === organization).delete
+          _ <- if (deleted > 0) {
+                 ResourceChangesTQ += ResourceChange(
+                   0L,
+                   organization,
+                   keyid.toString,
+                   ResChangeCategory.APIKEY,
+                   public = false,
+                   ResChangeResource.APIKEY,
+                   ResChangeOperation.DELETED
+                 ).toResourceChangeRow
+               } else {
+                 DBIO.successful(0)
+               }
+        } yield deleted).transactionally).map {
+          case 0 =>
+            (StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("apikey.not.found")))
+          case _ =>
+            (StatusCodes.NoContent, ApiResponse(ApiRespType.OK, ExchMsg.translate("apikey.deleted")))
+        }.recover {
+          case ex =>
+            logger.error(s"Error deleting API key $keyid for $organization/$username", ex)
+            (StatusCodes.InternalServerError, ApiResponse(ApiRespType.INTERNAL_ERROR, ExchMsg.translate("apikey.deletion.failed")))
+        }
+
+      case None =>
+        complete(StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, "User not found"))
+    }
   }
 
   // === GET /v1/orgs/{organization}/users/{username}/apikeys/{keyid} ===
@@ -205,65 +231,78 @@ trait UserApiKeys extends JacksonSupport with AuthenticationSupport {
     new responses.ApiResponse(responseCode = "404", description = "not found")
   )
 )
-  def getUserApiKeyById(@Parameter(hidden = true)  identity: Identity2,
-                        @Parameter(hidden = true)  organization: String,
-                        @Parameter(hidden = true)  username: String,
-                        @Parameter(hidden = true)  keyid: UUID): Route = complete {
+  def getUserApiKeyById(@Parameter(hidden = true) identity: Identity2,
+                        @Parameter(hidden = true) organization: String,
+                        @Parameter(hidden = true) username: String,
+                        @Parameter(hidden = true) keyid: UUID,
+                        resourceUuidOpt: Option[UUID]): Route = complete {
 
-    val userAndKeyQuery = for {
-      user <- UsersTQ.filter(u => u.organization === organization && u.username === username)
-      key  <- ApiKeysTQ.filter(k => k.id === keyid && k.user === user.user && k.orgid === organization)
-    } yield (user, key)
-
-    db.run(userAndKeyQuery.result.headOption).map {
-      case Some((_, keyRow)) =>
-        val ownerStr = s"$organization/$username"
-        val metadata = new ApiKeyMetadata(keyRow, ownerStr)
-        (StatusCodes.OK, metadata)
-
+    resourceUuidOpt match {
+      case Some(userUuid) =>
+        val keyQuery = ApiKeysTQ.filter(k => k.id === keyid && k.user === userUuid && k.orgid === organization)
+        
+        db.run(keyQuery.result.headOption).map {
+          case Some(keyRow) =>
+            val ownerStr = s"$organization/$username"
+            val metadata = new ApiKeyMetadata(keyRow, ownerStr)
+            (StatusCodes.OK, metadata)
+            
+          case None =>
+            (StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("apikey.not.found")))
+        }.recover {
+          case ex =>
+            logger.error(s"Failed to get API key $keyid for $organization/$username", ex)
+            (StatusCodes.InternalServerError, ApiResponse(ApiRespType.INTERNAL_ERROR, "Failed to retrieve API key"))
+        }
+        
       case None =>
-        (StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, ExchMsg.translate("apikey.not.found")))
+        complete(StatusCodes.NotFound, ApiResponse(ApiRespType.NOT_FOUND, "User not found"))
     }
   }
 
-def userApiKeys(identity: Identity2): Route = {
-  pathPrefix("orgs" / Segment / "users" / Segment / "apikeys") { (organization, username) =>
-    val resource = OrgAndId(organization, username).toString
+  def userApiKeys(identity: Identity2): Route = {
+    pathPrefix("orgs" / Segment / "users" / Segment / "apikeys") { (organization, username) =>
+      val resourceType = "user"
+      val resource = OrgAndId(organization, username).toString
 
-    val getResourceIdentity: Future[Option[UUID]] = db.run {
-      UsersTQ
-        .filter(u => u.organization === organization && u.username === username)
-        .map(_.user)
-        .result
-        .headOption
-    }
-
-    def routeMethods(resourceIdentity: Option[UUID]): Route = {
-      pathEndOrSingleSlash {
-        post {
-          exchAuth(TUser(resource, resourceIdentity), Access.WRITE, validIdentity = identity) { _ =>
-            postUserApiKey(identity, organization, username)
-          }
+      val cacheCallback: Future[(UUID, Boolean)] =
+        cacheResourceOwnership.cachingF(organization, username, resourceType)(
+          Option(Configuration.getConfig.getInt("api.cache.resourcesTtlSeconds").seconds)
+        ) {
+          // logger.debug(s"[userApiKeys] UUID not found in cache, querying DB for $resource")
+          getOwnerOfResource(organization, resource, resourceType)
         }
-      } ~
-      path(JavaUUID) { keyid =>
-        get {
-          exchAuth(TUser(resource, resourceIdentity), Access.READ, validIdentity = identity) { _ =>
-            getUserApiKeyById(identity, organization, username, keyid)
+
+      def routeMethods(resourceIdentity: Option[UUID]): Route = {
+        pathEndOrSingleSlash {
+          post {
+            exchAuth(TUser(resource, resourceIdentity), Access.WRITE, validIdentity = identity) { _ =>
+              postUserApiKey(identity, organization, username, resourceIdentity)
+            }
           }
         } ~
-        delete {
-          exchAuth(TUser(resource, resourceIdentity), Access.WRITE, validIdentity = identity) { _ =>
-            deleteUserApiKey(identity, organization, username, keyid)
+        path(JavaUUID) { keyid =>
+          get {
+            exchAuth(TUser(resource, resourceIdentity), Access.READ, validIdentity = identity) { _ =>
+              getUserApiKeyById(identity, organization, username, keyid, resourceIdentity)
+            }
+          } ~
+          delete {
+            exchAuth(TUser(resource, resourceIdentity), Access.WRITE, validIdentity = identity) { _ =>
+              deleteUserApiKey(identity, organization, username, keyid, resourceIdentity)
+            }
           }
         }
       }
-    }
 
-    onComplete(getResourceIdentity) {
-      case Success(resourceIdentityOpt) => routeMethods(resourceIdentityOpt)
-      case Failure(_)                   => routeMethods(None)
+      onComplete(cacheCallback) {
+        case Success((uuid, fromCache)) =>
+          // logger.debug(s"[userApiKeys] Resolved UUID for $resource: $uuid (fromCache = $fromCache)")
+          routeMethods(Some(uuid))
+        case Failure(ex) =>
+          // logger.warning(s"[userApiKeys] Failed to resolve UUID for $resource: ${ex.getMessage}")
+          routeMethods(None)
+      }
     }
   }
-}
 }
