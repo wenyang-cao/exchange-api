@@ -253,6 +253,8 @@ trait User extends JacksonSupport with AuthenticationSupport {
           
           validateWithMsg(if(Option(reqBody.password).isEmpty || Option(reqBody.email).isEmpty || reqBody.password == null || reqBody.email == null)
                             Option(ExchMsg.translate("password.must.be.non.blank.when.creating.user"))
+                          else if (Set("apikey", "iamapikey").contains(username.toLowerCase)) //block creation of user with reserved usernames 'apikey' or 'iamapikey
+                            Option(ExchMsg.translate("user.reserved.name")) 
                           else if (reqBody.password.isBlank || reqBody.password.isEmpty)
                             Option(ExchMsg.translate("password.must.be.non.blank.when.creating.user"))
                           else if (organization == "root" &&

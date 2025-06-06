@@ -14,6 +14,9 @@ object ApiKeysTQ extends TableQuery(new ApiKeys(_)) {
   def getById(id: UUID): Query[ApiKeys, ApiKeyRow, Seq] =
     this.filter(_.id === id)
 
+  def getByOrg(orgid: String): Query[ApiKeys, ApiKeyRow, Seq] =
+    this.filter(_.orgid === orgid)
+    
   def insert(apiKey: ApiKeyRow): DBIO[Int] = this += apiKey
 
 }

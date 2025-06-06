@@ -95,11 +95,25 @@ class TestPostApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
       password = Some(Password.hash(PASSWORD)),
       user = UUID.randomUUID(),
       username = "testPostApiKeyRouteUser1"
+  ),
+    UserRow(
+      createdAt = ApiTime.nowUTCTimestamp,
+      email = Some("hubadmin0@example.com"),
+      identityProvider = "Open Horizon",
+      isHubAdmin = true,
+      isOrgAdmin = false,
+      modifiedAt = ApiTime.nowUTCTimestamp,
+      modified_by = None,
+      organization = "root",
+      password = Some(Password.hash(PASSWORD)),
+      user = UUID.randomUUID(),
+      username = "testPostApiKeyRouteHubAdmin0"
   )
 ) 
 
   private val ORGADMINAUTH = ("Authorization", "Basic " + ApiUtils.encode("testPostApiKeyRouteOrg0/testPostApiKeyRouteAdmin0:password"))
   private val USERAUTH = ("Authorization", "Basic " + ApiUtils.encode("testPostApiKeyRouteOrg0/testPostApiKeyRouteUser0:password"))
+  private val HUBADMINAUTH = ("Authorization", "Basic " + ApiUtils.encode("root/testPostApiKeyRouteHubAdmin0:password"))
 
   override def beforeAll(): Unit = {
     val setupAction = DBIO.seq(
@@ -116,6 +130,9 @@ class TestPostApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
     ), AWAITDURATION)
     Await.ready(DBCONNECTION.run(
       ApiKeysTQ.filter(_.orgid startsWith "testPostApiKeyRouteOrg").delete
+    ), AWAITDURATION)
+    Await.ready(DBCONNECTION.run(
+      ApiKeysTQ.filter(k =>  k.orgid === "root" && k.user === TESTUSERS(3).user).delete
     ), AWAITDURATION)
     Await.ready(DBCONNECTION.run(
       UsersTQ.filter(_.username startsWith "testPostApiKeyRoute").delete 
@@ -235,38 +252,96 @@ class TestPostApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
     assert(response.code === HttpCode.ACCESS_DENIED.intValue)
   }
 
-// Non-admin user tries to create API key for another user => should fail (403)
-test("POST /orgs/" + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE + " -- non-admin tries to create apikey for another user") {
-  val response = Http(
-    URL + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE.dropRight(1))
-    .headers(ACCEPT)
-    .headers(USERAUTH)
-    .header("Content-Type", "application/json")
-    .postData("""{"description": "Unauthorized Attempt"}""")
-    .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
-    .asString
+  // Non-admin user tries to create API key for another user => should fail (403)
+  test("POST /orgs/" + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE + " -- non-admin tries to create apikey for another user") {
+    val response = Http(
+      URL + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE.dropRight(1))
+      .headers(ACCEPT)
+      .headers(USERAUTH)
+      .header("Content-Type", "application/json")
+      .postData("""{"description": "Unauthorized Attempt"}""")
+      .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
+      .asString
 
-  info("Code: " + response.code)
-  info("Body: " + response.body)
+    info("Code: " + response.code)
+    info("Body: " + response.body)
 
-  assert(response.code === HttpCode.ACCESS_DENIED.intValue)
-}
+    assert(response.code === HttpCode.ACCESS_DENIED.intValue)
+  }
 
-// Admin tries to create key for non-existent user => should fail (400 for now)
-test("POST /orgs/" + TESTORGS(0).orgId + "/users/nonexistentuser" + ROUTE + " -- admin creates apikey for non-existent user") {
-  val response = Http(
-    URL + TESTORGS(0).orgId + "/users/nonexistentuser" + ROUTE.dropRight(1))
-    .headers(ACCEPT)
-    .headers(ORGADMINAUTH)
-    .header("Content-Type", "application/json")
-    .postData("""{"description": "Non-existent user test"}""")
-    .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
-    .asString
+  // Admin tries to create key for non-existent user => should fail (400 for now)
+  test("POST /orgs/" + TESTORGS(0).orgId + "/users/nonexistentuser" + ROUTE + " -- admin creates apikey for non-existent user") {
+    val response = Http(
+      URL + TESTORGS(0).orgId + "/users/nonexistentuser" + ROUTE.dropRight(1))
+      .headers(ACCEPT)
+      .headers(ORGADMINAUTH)
+      .header("Content-Type", "application/json")
+      .postData("""{"description": "Non-existent user test"}""")
+      .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
+      .asString
 
-  info("Code: " + response.code)
-  info("Body: " + response.body)
+    info("Code: " + response.code)
+    info("Body: " + response.body)
 
-  assert(response.code === HttpCode.NOT_FOUND.intValue)
-}
+    assert(response.code === HttpCode.NOT_FOUND.intValue)
+  }
+
+  // Hub admin creates their own API key
+  test("POST /orgs/root/users/" + TESTUSERS(3).username + ROUTE + " -- hub admin creates own apikey") {
+    val response = Http(
+      URL + "root/users/" + TESTUSERS(3).username + ROUTE.dropRight(1))
+      .headers(ACCEPT)
+      .headers(HUBADMINAUTH)
+      .header("Content-Type", "application/json")
+      .postData("""{"description": "Hub Admin API Key"}""")
+      .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
+      .asString
+
+    info("Code: " + response.code)
+    info("Body: " + response.body)
+    assert(response.code === HttpCode.POST_OK.intValue)
+    val responseBody = JsonMethods.parse(response.body).extract[PostApiKeyResponse]
+    assert(responseBody.owner === s"${TESTUSERS(3).organization}/${TESTUSERS(3).username}")
+    assert(responseBody.description === "Hub Admin API Key")
+    assert(responseBody.id.nonEmpty)
+    assert(responseBody.value.nonEmpty)
+  }
+
+  // Hub admin creates API key for org admin
+  test("POST /orgs/" + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE + " -- hub admin creates apikey for org admin") {
+    val response = Http(
+      URL + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE.dropRight(1))
+      .headers(ACCEPT)
+      .headers(HUBADMINAUTH)
+      .header("Content-Type", "application/json")
+      .postData("""{"description": "Hub Admin Created Key for Org Admin"}""")
+      .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
+      .asString
+
+    info("Code: " + response.code)
+    info("Body: " + response.body)
+    assert(response.code === HttpCode.POST_OK.intValue)
+    val responseBody = JsonMethods.parse(response.body).extract[PostApiKeyResponse]
+    assert(responseBody.owner === s"${TESTUSERS(0).organization}/${TESTUSERS(0).username}")
+    assert(responseBody.description === "Hub Admin Created Key for Org Admin")
+    assert(responseBody.id.nonEmpty)
+    assert(responseBody.value.nonEmpty)
+  }
+
+  // Hub admin tries to create API key for regular user (should fail)
+  test("POST /orgs/" + TESTORGS(0).orgId + "/users/" + TESTUSERS(1).username + ROUTE + " -- hub admin tries to create apikey for user") {
+    val response = Http(
+      URL + TESTORGS(0).orgId + "/users/" + TESTUSERS(1).username + ROUTE.dropRight(1))
+      .headers(ACCEPT)
+      .headers(HUBADMINAUTH)
+      .header("Content-Type", "application/json")
+      .postData("""{"description": "Hub Admin Unauthorized Attempt"}""")
+      .timeout(connTimeoutMs = 1000, readTimeoutMs = 10000)
+      .asString
+
+    info("Code: " + response.code)
+    info("Body: " + response.body)
+    assert(response.code === HttpCode.NOT_FOUND.intValue)
+  }
 
 }

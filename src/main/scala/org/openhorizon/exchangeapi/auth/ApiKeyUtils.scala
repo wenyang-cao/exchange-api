@@ -2,7 +2,7 @@ package org.openhorizon.exchangeapi.auth
 import java.security.{MessageDigest, SecureRandom}
 import java.util.{Base64, UUID}
 import java.net.URLEncoder
-object ApiKeyUtils {
+case object ApiKeyUtils {
   def generateApiKeyHashedValue(): String = {
     var bytes:Array[Byte] = new Array[Byte](32)
     val secureRandom = new SecureRandom()

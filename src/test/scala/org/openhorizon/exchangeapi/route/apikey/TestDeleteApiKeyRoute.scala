@@ -96,6 +96,19 @@ class TestDeleteApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
     password = Some(Password.hash(PASSWORD)),
     user = UUID.randomUUID(),
     username = "testDeleteApiKeyRouteUser1"
+  ),
+    UserRow(
+    createdAt = ApiTime.nowUTCTimestamp,
+    email = Some("hubadmin0@example.com"),
+    identityProvider = "Open Horizon",
+    isHubAdmin = true,
+    isOrgAdmin = false,
+    modifiedAt = ApiTime.nowUTCTimestamp,
+    modified_by = None,
+    organization = "root",
+    password = Some(Password.hash(PASSWORD)),
+    user = UUID.randomUUID(),
+    username = "testDeleteApiKeyRouteHubAdmin0"
   )
 )
 
@@ -144,10 +157,22 @@ class TestDeleteApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
       modifiedAt = ApiTime.nowUTCTimestamp,
       modifiedBy = TESTUSERS(2).user
     ),
+    ApiKeyRow(
+      orgid = "root",
+      id = UUID.randomUUID(),
+      user = TESTUSERS(3).user,
+      description = "Test API Key HubAdmin",
+      hashedKey = "hashHubAdmin",
+      createdAt = ApiTime.nowUTCTimestamp,
+      createdBy = TESTUSERS(3).user,
+      modifiedAt = ApiTime.nowUTCTimestamp,
+      modifiedBy = TESTUSERS(3).user
+    ),
   )
 
   private val ORGADMINAUTH = ("Authorization", "Basic " + ApiUtils.encode("testDeleteApiKeyRouteOrg0/testDeleteApiKeyRouteAdmin0:password"))
   private val USERAUTH = ("Authorization", "Basic " + ApiUtils.encode("testDeleteApiKeyRouteOrg0/testDeleteApiKeyRouteUser0:password"))
+  private val HUBADMINAUTH = ("Authorization", "Basic " + ApiUtils.encode("root/testDeleteApiKeyRouteHubAdmin0:password"))
 
 
   override def beforeAll(): Unit = {
@@ -158,20 +183,23 @@ class TestDeleteApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
       Await.result(DBCONNECTION.run(insertAction.transactionally), AWAITDURATION)
   }
 
-  override def afterAll(): Unit = {
-    Await.ready(DBCONNECTION.run(
-      ResourceChangesTQ.filter(_.orgId startsWith "testPostApiKeyRouteOrg").delete
-    ), AWAITDURATION)
-    Await.ready(DBCONNECTION.run(
-      ApiKeysTQ.filter(_.orgid startsWith "testDeleteApiKeyRouteOrg").delete
-    ), AWAITDURATION)
-    Await.ready(DBCONNECTION.run(
-      UsersTQ.filter(_.username startsWith "testDeleteApiKeyRoute").delete 
-    ), AWAITDURATION)
-    Await.ready(DBCONNECTION.run(
-      OrgsTQ.filter(_.orgid startsWith "testDeleteApiKeyRouteOrg").delete
-    ), AWAITDURATION)
-  }
+override def afterAll(): Unit = {
+  Await.ready(DBCONNECTION.run(
+    ResourceChangesTQ.filter(_.orgId startsWith "testPostApiKeyRouteOrg").delete
+  ), AWAITDURATION)
+  Await.ready(DBCONNECTION.run(
+    ApiKeysTQ.filter(_.orgid startsWith "testDeleteApiKeyRouteOrg").delete
+  ), AWAITDURATION)
+  Await.ready(DBCONNECTION.run(
+    UsersTQ.filter(_.username startsWith "testDeleteApiKeyRoute").delete
+  ), AWAITDURATION)
+  Await.ready(DBCONNECTION.run(
+    OrgsTQ.filter(_.orgid startsWith "testDeleteApiKeyRouteOrg").delete
+  ), AWAITDURATION)
+  Await.ready(DBCONNECTION.run(
+     ApiKeysTQ.filter(k =>  k.orgid === "root" && k.user === TESTUSERS(3).user).delete
+  ), AWAITDURATION)
+}
 
   // DELETE /v1/orgs/{orgid}/users/{username}/apikeys/{keyid} 
   // User deletes their own API key
@@ -237,14 +265,65 @@ class TestDeleteApiKeyRoute extends AnyFunSuite with BeforeAndAfterAll {
   }
 
   // Org admin tries to delete an API key from a different org (should fail)
-  test("DELETE /orgs/" + TESTORGS(1).orgId + "/users/" + TESTUSERS(2).username + ROUTE + TESTAPIKEYS(2).id + " -- org admin tries to delete key from another org") {
+  test("DELETE /orgs/" + TESTORGS(1).orgId + "/users/" + TESTUSERS(2).username + ROUTE + TESTAPIKEYS(3).id + " -- org admin tries to delete key from another org") {
     val response = Http(
-      URL + TESTORGS(1).orgId + "/users/" + TESTUSERS(2).username + ROUTE + TESTAPIKEYS(2).id
+      URL + TESTORGS(1).orgId + "/users/" + TESTUSERS(2).username + ROUTE + TESTAPIKEYS(3).id
     ).headers(ACCEPT).headers(ORGADMINAUTH).method("DELETE").asString
 
     info("Code: " + response.code)
     info("Body: " + response.body)
     assert(response.code === HttpCode.ACCESS_DENIED.intValue)
+  }
+
+  // Hub admin deletes their own API key
+  test("DELETE /orgs/" + "root" + "/users/" + TESTUSERS(3).username + ROUTE + TESTAPIKEYS(4).id + " -- hub admin deletes own apikey") {
+    val response = Http(
+      URL + "root" + "/users/" + TESTUSERS(3).username + ROUTE + TESTAPIKEYS(4).id
+    ).headers(ACCEPT).headers(HUBADMINAUTH).method("DELETE").asString
+
+    info("Code: " + response.code)
+    info("Body: " + response.body)
+    assert(response.code === HttpCode.DELETED.intValue)
+
+    val checkResponse = Http(
+      URL + "root" + "/users/" +
+        TESTUSERS(3).username + ROUTE + TESTAPIKEYS(4).id
+    ).headers(ACCEPT).headers(HUBADMINAUTH).asString
+
+    info("Check Code: " + checkResponse.code)
+    info("Check Body: " + checkResponse.body)
+    assert(checkResponse.code === HttpCode.NOT_FOUND.intValue)
+  }
+
+  // Hub admin deletes org admin's API key
+  test("DELETE /orgs/" + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE + TESTAPIKEYS(0).id + " -- hub admin deletes org admin apikey") {
+    val response = Http(
+      URL + TESTORGS(0).orgId + "/users/" + TESTUSERS(0).username + ROUTE + TESTAPIKEYS(0).id
+    ).headers(ACCEPT).headers(HUBADMINAUTH).method("DELETE").asString
+
+    info("Code: " + response.code)
+    info("Body: " + response.body)
+    assert(response.code === HttpCode.DELETED.intValue)
+
+    val checkResponse = Http(
+      URL + TESTORGS(0).orgId + "/users/" +
+        TESTUSERS(0).username + ROUTE + TESTAPIKEYS(0).id
+    ).headers(ACCEPT).headers(HUBADMINAUTH).asString
+
+    info("Check Code: " + checkResponse.code)
+    info("Check Body: " + checkResponse.body)
+    assert(checkResponse.code === HttpCode.NOT_FOUND.intValue)
+  }
+
+  // Hub admin tries to delete regular user's API key (should fail)
+  test("DELETE /orgs/" + TESTORGS(1).orgId + "/users/" + TESTUSERS(2).username + ROUTE + TESTAPIKEYS(3).id + " -- hub admin tries to delete user apikey") {
+    val response = Http(
+      URL + TESTORGS(1).orgId + "/users/" + TESTUSERS(2).username + ROUTE + TESTAPIKEYS(3).id
+    ).headers(ACCEPT).headers(HUBADMINAUTH).method("DELETE").asString
+
+    info("Code: " + response.code)
+    info("Body: " + response.body)
+    assert(response.code === HttpCode.NOT_FOUND.intValue)
   }
   
 }
