@@ -22,7 +22,7 @@ jobs:
     # Variables that are available to all steps in the job
     env:
       DEBIAN_FRONTEND: noninteractive
-      DOCKER_EXCH_TAG: 2.127.0
+      DOCKER_EXCH_TAG: 2.126.1
       DOCKER_NETWORK: exchange-api-network
       DOCKER_REGISTRY: openhorizon
       EXCHANGE_DB_NAME: exchange
@@ -30,7 +30,7 @@ jobs:
       EXCHANGE_DB_NUMTHREADS: 9
       EXCHANGE_DB_PORT: 5432
       EXCHANGE_DB_USER: admin
-      EXCHANGE_IMAGE_TAG: 2.127.0
+      EXCHANGE_IMAGE_TAG: 2.126.1
       EXCHANGE_LOG_LEVEL: DEBUG
       EXCHANGE_LOG_SCALACACHE_CAFFEINE: INFO
       EXCHANGE_PEKKO_LOGLEVEL: DEBUG
