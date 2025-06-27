@@ -612,8 +612,8 @@ object ExchangeApiApp extends App
                         // statusOrganization ~
                         statuses(validIdentity) ~
                         token(validIdentity) ~
-                        user(validIdentity) ~
                         users(validIdentity) ~
+                        user(validIdentity) ~
                         userApiKeys(validIdentity)
                     })
                   }
