@@ -266,9 +266,6 @@ trait Users extends JacksonSupport with AuthenticationSupport {
           users <-
             Compiled((UsersTQ.filter(user => (user.organization === organization &&
                                              user.username === identity.username))
-                            .filterIf(identity.isStandardUser)(users => users.user === identity.identifier.get) // Users can see themselves
-                            .filterIf(identity.isOrgAdmin)(users => !users.isHubAdmin && users.organization === identity.organization && !(users.organization === "root" && users.username === "root")) // Organization Admins can see other Org Admins and Users in their Organization. They cannot see Hub Admins, and they cannot see Root.
-                            .filterIf(identity.isHubAdmin)(users => (users.isHubAdmin || users.isOrgAdmin) && !(users.organization === "root" && users.username === "root")) // Hub Admins can see other Hub Admins and Organization Admins system-wide. They cannot see Root, and they cannot see normal users.
                             .filter(_.password.isDefined)
                             .take(1)
                             .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
@@ -290,9 +287,6 @@ trait Users extends JacksonSupport with AuthenticationSupport {
                      ++
                      (UsersTQ.filter(user => (user.organization === organization && // Have to retrieve the Some and None values separately to substitute the Some values.
                                              user.username === identity.username))
-                            .filterIf(identity.isStandardUser)(users => users.user === identity.identifier.get) // Users can see themselves
-                            .filterIf(identity.isOrgAdmin)(users => !users.isHubAdmin && users.organization === identity.organization && !(users.organization === "root" && users.username === "root")) // Organization Admins can see other Org Admins and Users in their Organization. They cannot see Hub Admins, and they cannot see Root.
-                            .filterIf(identity.isHubAdmin)(users => (users.isHubAdmin || users.isOrgAdmin) && !(users.organization === "root" && users.username === "root")) // Hub Admins can see other Hub Admins and Organization Admins system-wide. They cannot see Root, and they cannot see normal users.
                             .filter(_.password.isEmpty)
                             .take(1)
                             .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
@@ -398,9 +392,6 @@ trait Users extends JacksonSupport with AuthenticationSupport {
           users <-
             Compiled((UsersTQ.filter(user => (user.organization === organization &&
                                              user.username === identity.username))
-                            .filterIf(identity.isStandardUser)(users => users.user === identity.identifier.get) // Users can see themselves
-                            .filterIf(identity.isOrgAdmin)(users => !users.isHubAdmin && users.organization === identity.organization && !(users.organization === "root" && users.username === "root")) // Organization Admins can see other Org Admins and Users in their Organization. They cannot see Hub Admins, and they cannot see Root.
-                            .filterIf(identity.isHubAdmin)(users => (users.isHubAdmin || users.isOrgAdmin) && !(users.organization === "root" && users.username === "root")) // Hub Admins can see other Hub Admins and Organization Admins system-wide. They cannot see Root, and they cannot see normal users.
                             .filter(_.password.isDefined)
                             .take(1)
                             .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
@@ -422,9 +413,6 @@ trait Users extends JacksonSupport with AuthenticationSupport {
                      ++
                      (UsersTQ.filter(user => (user.organization === organization && // Have to retrieve the Some and None values separately to substitute the Some values.
                                              user.username === identity.username))
-                            .filterIf(identity.isStandardUser)(users => users.user === identity.identifier.get) // Users can see themselves
-                            .filterIf(identity.isOrgAdmin)(users => !users.isHubAdmin && users.organization === identity.organization && !(users.organization === "root" && users.username === "root")) // Organization Admins can see other Org Admins and Users in their Organization. They cannot see Hub Admins, and they cannot see Root.
-                            .filterIf(identity.isHubAdmin)(users => (users.isHubAdmin || users.isOrgAdmin) && !(users.organization === "root" && users.username === "root")) // Hub Admins can see other Hub Admins and Organization Admins system-wide. They cannot see Root, and they cannot see normal users.
                             .filter(_.password.isEmpty)
                             .take(1)
                             .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
