@@ -213,6 +213,10 @@ trait Users extends JacksonSupport with AuthenticationSupport {
       }) // end of complete*/
     }
   
+// TODO: These hardcoded /apikey and /iamapikey endpoints are temporary workarounds 
+// for legacy components that pass "apikey"/"iamapikey" as username in HTTP requests.
+// Long-term solution: update calling components to use proper authentication instead 
+// of these compatibility endpoints.
   // =========== GET /orgs/{organization}/users/apikey and /orgs/{organization}/users/apikey ================================
   @GET
   @Path("/apikey")
@@ -259,86 +263,95 @@ trait Users extends JacksonSupport with AuthenticationSupport {
   def getUserSelfApikey(@Parameter(hidden = true) identity: Identity2,
                         @Parameter(hidden = true) organization: String): Route =
     get {
-      logger.debug(s"GET /orgs/$organization/users/apikey - By ${identity.resource}:${identity.role}")
-      
-      val getUserWithApiKeys: CompiledStreamingExecutable[Query[(MappedProjection[UserRow, (Timestamp, Option[String], String, Boolean, Boolean, Timestamp, Option[UUID], String, Option[String], UUID, String)], Rep[Option[(Rep[String], Rep[UUID], Rep[String])]], Rep[Option[ApiKeys]]), (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow]), Seq], Seq[(UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])], (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])] =
-        for {
-          users <-
-            Compiled((UsersTQ.filter(user => (user.organization === organization &&
-                                             user.username === identity.username))
-                            .filter(_.password.isDefined)
-                            .take(1)
-                            .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
-                            .on(_.modifiedBy === _._2)
-                            .joinLeft(ApiKeysTQ)
-                            .on(_._1.user === _.user)
-                            .map(users =>
-                                  ((users._1._1.createdAt,
-                                   users._1._1.email,
-                                   users._1._1.identityProvider,
-                                   users._1._1.isHubAdmin,
-                                   users._1._1.isOrgAdmin,
-                                   users._1._1.modifiedAt,
-                                   users._1._1.modifiedBy,
-                                   users._1._1.organization,
-                                   Option(StrConstants.hiddenPw),  // DO NOT grab and return credentials.
-                                   users._1._1.user,
-                                   users._1._1.username), users._1._2, users._2)))  // Because of the outer-join we cannot touch the content of these values to combine them ((organization, username) => (organization/username)).
-                     ++
-                     (UsersTQ.filter(user => (user.organization === organization && // Have to retrieve the Some and None values separately to substitute the Some values.
-                                             user.username === identity.username))
-                            .filter(_.password.isEmpty)
-                            .take(1)
-                            .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
-                            .on(_.modifiedBy === _._2)
-                            .joinLeft(ApiKeysTQ)
-                            .on(_._1.user === _.user)
-                            .map(users =>
-                                   ((users._1._1.createdAt,
-                                     users._1._1.email,
-                                     users._1._1.identityProvider,
-                                     users._1._1.isHubAdmin,
-                                     users._1._1.isOrgAdmin,
-                                     users._1._1.modifiedAt,
-                                     users._1._1.modifiedBy,
-                                     users._1._1.organization,
-                                     None,
-                                     users._1._1.user,
-                                     users._1._1.username), users._1._2, users._2))))
-        } yield users.map(user => (user._1.mapTo[UserRow], user._2, user._3))
+      if (identity.organization != organization) {
+        complete((StatusCodes.BadRequest, ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("org.path.mismatch"))))
+      } 
+      else{
+        logger.debug(s"GET /orgs/$organization/users/apikey - By ${identity.resource}:${identity.role}")
         
-      complete({
-            db.run(getUserWithApiKeys.result.transactionally).map { result =>
-                  // logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
+        val getUserWithApiKeys: CompiledStreamingExecutable[Query[(MappedProjection[UserRow, (Timestamp, Option[String], String, Boolean, Boolean, Timestamp, Option[UUID], String, Option[String], UUID, String)], Rep[Option[(Rep[String], Rep[UUID], Rep[String])]], Rep[Option[ApiKeys]]), (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow]), Seq], Seq[(UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])], (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])] =
+          for {
+            users <-
+              Compiled((UsersTQ.filter(user => (user.organization === organization &&
+                                              user.username === identity.username))
+                              .filter(_.password.isDefined)
+                              .take(1)
+                              .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
+                              .on(_.modifiedBy === _._2)
+                              .joinLeft(ApiKeysTQ)
+                              .on(_._1.user === _.user)
+                              .map(users =>
+                                    ((users._1._1.createdAt,
+                                    users._1._1.email,
+                                    users._1._1.identityProvider,
+                                    users._1._1.isHubAdmin,
+                                    users._1._1.isOrgAdmin,
+                                    users._1._1.modifiedAt,
+                                    users._1._1.modifiedBy,
+                                    users._1._1.organization,
+                                    Option(StrConstants.hiddenPw),  // DO NOT grab and return credentials.
+                                    users._1._1.user,
+                                    users._1._1.username), users._1._2, users._2)))  // Because of the outer-join we cannot touch the content of these values to combine them ((organization, username) => (organization/username)).
+                      ++
+                      (UsersTQ.filter(user => (user.organization === organization && // Have to retrieve the Some and None values separately to substitute the Some values.
+                                              user.username === identity.username))
+                              .filter(_.password.isEmpty)
+                              .take(1)
+                              .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
+                              .on(_.modifiedBy === _._2)
+                              .joinLeft(ApiKeysTQ)
+                              .on(_._1.user === _.user)
+                              .map(users =>
+                                    ((users._1._1.createdAt,
+                                      users._1._1.email,
+                                      users._1._1.identityProvider,
+                                      users._1._1.isHubAdmin,
+                                      users._1._1.isOrgAdmin,
+                                      users._1._1.modifiedAt,
+                                      users._1._1.modifiedBy,
+                                      users._1._1.organization,
+                                      None,
+                                      users._1._1.user,
+                                      users._1._1.username), users._1._2, users._2))))
+          } yield users.map(user => (user._1.mapTo[UserRow], user._2, user._3))
+          
+        complete({
+              db.run(getUserWithApiKeys.result.transactionally).map { result =>
+                    // logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
 
-                  if (result.nonEmpty) {
-                        val userResult = result.head
-                        val userRow = userResult._1
-                        val modifiedByInfo = userResult._2
+                    if (result.nonEmpty) {
+                          val userResult = result.head
+                          val userRow = userResult._1
+                          val modifiedByInfo = userResult._2
 
-                        val apiKeyMetadataList = result.filter(_._3.isDefined).map { case (_, _, Some(apiKeyRow)) =>
-                              new ApiKeyMetadata(apiKeyRow, null)
-                        }.distinct
+                          val apiKeyMetadataList = result.filter(_._3.isDefined).map { case (_, _, Some(apiKeyRow)) =>
+                                new ApiKeyMetadata(apiKeyRow, null)
+                          }.distinct
 
-                        val user = new User((userRow, modifiedByInfo), Some(apiKeyMetadataList))
-                        val userMap: Map[String, User] =
-                              Map(s"${userRow.organization}/${userRow.username}" -> user) // Ugly mapping, TODO: redesign response body
+                          val user = new User((userRow, modifiedByInfo), Some(apiKeyMetadataList))
+                          val userMap: Map[String, User] =
+                                Map(s"${userRow.organization}/${userRow.username}" -> user) // Ugly mapping, TODO: redesign response body
 
-                        (StatusCodes.OK, GetUsersResponse(userMap, 0))
-                  } else {
-                        (StatusCodes.NotFound, GetUsersResponse())
-                  }
-            }.recover {
-                  case t: org.postgresql.util.PSQLException =>
-                        ExchangePosgtresErrorHandling.ioProblemError(
-                              t, ExchMsg.translate("user.not.added", t.toString))
+                          (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                    } else {
+                          (StatusCodes.NotFound, GetUsersResponse())
+                    }
+              }.recover {
+                    case t: org.postgresql.util.PSQLException =>
+                          ExchangePosgtresErrorHandling.ioProblemError(
+                                t, ExchMsg.translate("user.not.added", t.toString))
 
-                  case t =>
-                        (HttpCode.BAD_INPUT,
-                              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
-            }
-      })
+                    case t =>
+                          (HttpCode.BAD_INPUT,
+                                ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
+              }
+        })
+      }
     }
+  // TODO: These hardcoded /apikey and /iamapikey endpoints are temporary workarounds 
+  // for legacy components that pass "apikey"/"iamapikey" as username in HTTP requests.
+  // Long-term solution: update calling components to use proper authentication instead 
+  // of these compatibility endpoints.  
   // =========== GET /orgs/{organization}/users/apikey and /orgs/{organization}/users/iamapikey ================================
   @GET
   @Path("/iamapikey")
@@ -385,85 +398,90 @@ trait Users extends JacksonSupport with AuthenticationSupport {
   def getUserSelfIamApikey(@Parameter(hidden = true) identity: Identity2,
                            @Parameter(hidden = true) organization: String): Route =
     get {
-      logger.debug(s"GET /orgs/$organization/users/iamapikey - By ${identity.resource}:${identity.role}")
-      
-      val getUserWithApiKeys: CompiledStreamingExecutable[Query[(MappedProjection[UserRow, (Timestamp, Option[String], String, Boolean, Boolean, Timestamp, Option[UUID], String, Option[String], UUID, String)], Rep[Option[(Rep[String], Rep[UUID], Rep[String])]], Rep[Option[ApiKeys]]), (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow]), Seq], Seq[(UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])], (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])] =
-        for {
-          users <-
-            Compiled((UsersTQ.filter(user => (user.organization === organization &&
-                                             user.username === identity.username))
-                            .filter(_.password.isDefined)
-                            .take(1)
-                            .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
-                            .on(_.modifiedBy === _._2)
-                            .joinLeft(ApiKeysTQ)
-                            .on(_._1.user === _.user)
-                            .map(users =>
-                                  ((users._1._1.createdAt,
-                                   users._1._1.email,
-                                   users._1._1.identityProvider,
-                                   users._1._1.isHubAdmin,
-                                   users._1._1.isOrgAdmin,
-                                   users._1._1.modifiedAt,
-                                   users._1._1.modifiedBy,
-                                   users._1._1.organization,
-                                   Option(StrConstants.hiddenPw),  // DO NOT grab and return credentials.
-                                   users._1._1.user,
-                                   users._1._1.username), users._1._2, users._2)))  // Because of the outer-join we cannot touch the content of these values to combine them ((organization, username) => (organization/username)).
-                     ++
-                     (UsersTQ.filter(user => (user.organization === organization && // Have to retrieve the Some and None values separately to substitute the Some values.
-                                             user.username === identity.username))
-                            .filter(_.password.isEmpty)
-                            .take(1)
-                            .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
-                            .on(_.modifiedBy === _._2)
-                            .joinLeft(ApiKeysTQ)
-                            .on(_._1.user === _.user)
-                            .map(users =>
-                                   ((users._1._1.createdAt,
-                                     users._1._1.email,
-                                     users._1._1.identityProvider,
-                                     users._1._1.isHubAdmin,
-                                     users._1._1.isOrgAdmin,
-                                     users._1._1.modifiedAt,
-                                     users._1._1.modifiedBy,
-                                     users._1._1.organization,
-                                     None,
-                                     users._1._1.user,
-                                     users._1._1.username), users._1._2, users._2))))
-        } yield users.map(user => (user._1.mapTo[UserRow], user._2, user._3))
+      if (identity.organization != organization) {
+        complete((StatusCodes.BadRequest, ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("org.path.mismatch"))))
+      } 
+      else{
+        logger.debug(s"GET /orgs/$organization/users/iamapikey - By ${identity.resource}:${identity.role}")
         
-      complete({
-            db.run(getUserWithApiKeys.result.transactionally).map { result =>
-                  // logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
+        val getUserWithApiKeys: CompiledStreamingExecutable[Query[(MappedProjection[UserRow, (Timestamp, Option[String], String, Boolean, Boolean, Timestamp, Option[UUID], String, Option[String], UUID, String)], Rep[Option[(Rep[String], Rep[UUID], Rep[String])]], Rep[Option[ApiKeys]]), (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow]), Seq], Seq[(UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])], (UserRow, Option[(String, UUID, String)], Option[ApiKeyRow])] =
+          for {
+            users <-
+              Compiled((UsersTQ.filter(user => (user.organization === organization &&
+                                              user.username === identity.username))
+                              .filter(_.password.isDefined)
+                              .take(1)
+                              .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
+                              .on(_.modifiedBy === _._2)
+                              .joinLeft(ApiKeysTQ)
+                              .on(_._1.user === _.user)
+                              .map(users =>
+                                    ((users._1._1.createdAt,
+                                    users._1._1.email,
+                                    users._1._1.identityProvider,
+                                    users._1._1.isHubAdmin,
+                                    users._1._1.isOrgAdmin,
+                                    users._1._1.modifiedAt,
+                                    users._1._1.modifiedBy,
+                                    users._1._1.organization,
+                                    Option(StrConstants.hiddenPw),  // DO NOT grab and return credentials.
+                                    users._1._1.user,
+                                    users._1._1.username), users._1._2, users._2)))  // Because of the outer-join we cannot touch the content of these values to combine them ((organization, username) => (organization/username)).
+                      ++
+                      (UsersTQ.filter(user => (user.organization === organization && // Have to retrieve the Some and None values separately to substitute the Some values.
+                                              user.username === identity.username))
+                              .filter(_.password.isEmpty)
+                              .take(1)
+                              .joinLeft(UsersTQ.map(users => (users.organization, users.user, users.username)))
+                              .on(_.modifiedBy === _._2)
+                              .joinLeft(ApiKeysTQ)
+                              .on(_._1.user === _.user)
+                              .map(users =>
+                                    ((users._1._1.createdAt,
+                                      users._1._1.email,
+                                      users._1._1.identityProvider,
+                                      users._1._1.isHubAdmin,
+                                      users._1._1.isOrgAdmin,
+                                      users._1._1.modifiedAt,
+                                      users._1._1.modifiedBy,
+                                      users._1._1.organization,
+                                      None,
+                                      users._1._1.user,
+                                      users._1._1.username), users._1._2, users._2))))
+          } yield users.map(user => (user._1.mapTo[UserRow], user._2, user._3))
+          
+        complete({
+              db.run(getUserWithApiKeys.result.transactionally).map { result =>
+                    // logger.debug(s"GET /orgs/$organization/users/$username result size: " + result.size)
 
-                  if (result.nonEmpty) {
-                        val userResult = result.head
-                        val userRow = userResult._1
-                        val modifiedByInfo = userResult._2
+                    if (result.nonEmpty) {
+                          val userResult = result.head
+                          val userRow = userResult._1
+                          val modifiedByInfo = userResult._2
 
-                        val apiKeyMetadataList = result.filter(_._3.isDefined).map { case (_, _, Some(apiKeyRow)) =>
-                              new ApiKeyMetadata(apiKeyRow, null)
-                        }.distinct
+                          val apiKeyMetadataList = result.filter(_._3.isDefined).map { case (_, _, Some(apiKeyRow)) =>
+                                new ApiKeyMetadata(apiKeyRow, null)
+                          }.distinct
 
-                        val user = new User((userRow, modifiedByInfo), Some(apiKeyMetadataList))
-                        val userMap: Map[String, User] =
-                              Map(s"${userRow.organization}/${userRow.username}" -> user) // Ugly mapping, TODO: redesign response body
+                          val user = new User((userRow, modifiedByInfo), Some(apiKeyMetadataList))
+                          val userMap: Map[String, User] =
+                                Map(s"${userRow.organization}/${userRow.username}" -> user) // Ugly mapping, TODO: redesign response body
 
-                        (StatusCodes.OK, GetUsersResponse(userMap, 0))
-                  } else {
-                        (StatusCodes.NotFound, GetUsersResponse())
-                  }
-            }.recover {
-                  case t: org.postgresql.util.PSQLException =>
-                        ExchangePosgtresErrorHandling.ioProblemError(
-                              t, ExchMsg.translate("user.not.added", t.toString))
+                          (StatusCodes.OK, GetUsersResponse(userMap, 0))
+                    } else {
+                          (StatusCodes.NotFound, GetUsersResponse())
+                    }
+              }.recover {
+                    case t: org.postgresql.util.PSQLException =>
+                          ExchangePosgtresErrorHandling.ioProblemError(
+                                t, ExchMsg.translate("user.not.added", t.toString))
 
-                  case t =>
-                        (HttpCode.BAD_INPUT,
-                              ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
-            }
-      })
+                    case t =>
+                          (HttpCode.BAD_INPUT,
+                                ApiResponse(ApiRespType.BAD_INPUT, ExchMsg.translate("user.not.updated", t.toString)))
+              }
+        })
+      }
     }
  
   def users(identity: Identity2): Route =
