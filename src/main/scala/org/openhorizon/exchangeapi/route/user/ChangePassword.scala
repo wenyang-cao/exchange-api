@@ -99,7 +99,7 @@ trait ChangePassword extends JacksonSupport with AuthenticationSupport {
         
         validateWithMsg(reqBody.getAnyProblem) {
           val timestamp: java.sql.Timestamp = ApiTime.nowUTCTimestamp
-                      val isOAuthEnabled = Configuration.getConfig.getBoolean("api.oauth.enabled")
+                      val isOAuthEnabled = Configuration.getConfig.hasPath("api.authentication.oauth.provider.user_info.url")
           
           val action =
                 Compiled(UsersTQ.filter(user => (user.organization === organization &&
